@@ -16,6 +16,7 @@ var bodies_root: Node2D
 var camera: Camera2D
 var selected_tool := "star"
 var war_active := false
+var has_played := false
 var sfx: Sfx
 
 # نظام الأكوان المتعددة
@@ -56,6 +57,10 @@ var wb_player_bonus := 0.0
 
 var bg_points: Array = []
 
+# سحب اللمس
+var press_pos := Vector2.ZERO
+var dragged := false
+
 func _ready() -> void:
 	setup_theme()
 	sfx = Sfx.new()
@@ -70,6 +75,8 @@ func _ready() -> void:
 	make_starfield()
 	setup_gods()
 	build_ui()
+	_apply_universe_visibility()
+	_refresh_universe_selector()
 	start_timers()
 	update_hud()
 	if FileAccess.file_exists(AUTOSAVE_PATH):
@@ -112,6 +119,11 @@ func create_universe(nm: String) -> int:
 	_refresh_universe_selector()
 	return universes.size() - 1
 
+func _apply_universe_visibility() -> void:
+	for k in range(universes.size()):
+		universes[k].visible = (k == current_universe)
+		universes[k].process_mode = Node.PROCESS_MODE_INHERIT if k == current_universe else Node.PROCESS_MODE_DISABLED
+
 func switch_universe(i: int) -> void:
 	if i < 0 or i >= universes.size() or i == current_universe:
 		return
@@ -133,6 +145,7 @@ func _on_create_universe() -> void:
 	if nm == "":
 		nm = "كون " + str(universes.size() + 1)
 	var idx := create_universe(nm)
+	has_played = true
 	new_universe_edit.text = ""
 	add_log("🌌 خلقتَ كوناً جديداً بالكامل: «%s»! عدد الأكوان الآن: %d" % [nm, universes.size()])
 	player.add_xp(20)
@@ -167,7 +180,7 @@ func setup_gods() -> void:
 	build_player_home()
 
 func build_player_home() -> void:
-	var home := universes[player.home_universe]
+	var home: Node2D = universes[player.home_universe]
 	var s := spawn_body_in("star", Vector2.ZERO, player, home)
 	for i in range(2):
 		var pl := spawn_body_in("planet", Vector2.ZERO, player, home)
@@ -231,7 +244,7 @@ func save_game(path: String, announce := true) -> void:
 	for i in range(universes.size()):
 		cfg.set_value("universe%d" % i, "name", universe_names[i])
 		cfg.set_value("universe%d" % i, "cam", universe_cams[i])
-		var bodies := universes[i].get_children()
+		var bodies: Array = universes[i].get_children()
 		cfg.set_value("universe%d" % i, "bcount", bodies.size())
 		for j in range(bodies.size()):
 			var b: CosmicBody = bodies[j]
@@ -320,14 +333,18 @@ func load_game(path: String) -> bool:
 	hud_universe.text = "🌌 الكون الحالي: " + universe_names[current_universe]
 	update_hud()
 	add_log("📂 تم تحميل عوالمك المحفوظة عبر الأكوان — عدتَ إلى عرشك أيها الإله!")
+	has_played = true
 	return true
 
 func _on_save_pressed() -> void:
 	save_game(SAVE_PATH)
 
 func _on_load_pressed() -> void:
-	if not load_game(SAVE_PATH):
-		add_log("⚠️ لا يوجد ملف حفظ يدوي بعد — جرّب «الحفظ» أولاً أو انتظر الحفظ التلقائي.")
+	var path: String = SAVE_PATH
+	if not FileAccess.file_exists(path):
+		path = AUTOSAVE_PATH
+	if not load_game(path):
+		add_log("⚠️ لا يوجد أي ملف حفظ بعد — اضغط «حفظ» أولاً.")
 	sfx.play("click")
 
 # ---------- تخصيص أسماء الآلهة ----------
@@ -364,14 +381,27 @@ func refresh_name_edits() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-			camera.zoom = (camera.zoom * 1.12).clamp(Vector2(0.25, 0.25), Vector2(3.0, 3.0))
+			_zoom_by(1.12)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			camera.zoom = (camera.zoom / 1.12).clamp(Vector2(0.25, 0.25), Vector2(3.0, 3.0))
-		elif event.button_index == MOUSE_BUTTON_LEFT and event.pressed and not war_active:
-			place_tool(get_global_mouse_position())
+			_zoom_by(1.0 / 1.12)
+		elif event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
+				press_pos = event.position
+				dragged = false
+			elif not dragged and not war_active:
+				place_tool(get_global_mouse_position())
 	elif event is InputEventMouseMotion:
 		if event.button_mask & MOUSE_BUTTON_MASK_MIDDLE or event.button_mask & MOUSE_BUTTON_MASK_RIGHT:
 			camera.position -= event.relative / camera.zoom.x
+		elif event.button_mask & MOUSE_BUTTON_MASK_LEFT:
+			if dragged or event.position.distance_to(press_pos) > 14.0:
+				dragged = true
+				camera.position -= event.relative / camera.zoom.x
+	elif event is InputEventMagnifyGesture:
+		_zoom_by(event.factor)
+
+func _zoom_by(f: float) -> void:
+	camera.zoom = (camera.zoom * f).clamp(Vector2(0.25, 0.25), Vector2(3.0, 3.0))
 
 func _process(delta: float) -> void:
 	var move := Vector2.ZERO
@@ -398,6 +428,7 @@ func _process(delta: float) -> void:
 # ---------- الخلق (موارد غير محدودة) ----------
 
 func place_tool(pos: Vector2) -> void:
+	has_played = true
 	match selected_tool:
 		"solarsystem":
 			var s := spawn_body("star", pos, player)
@@ -445,8 +476,12 @@ func start_timers() -> void:
 	add_child(t3)
 
 func _on_autosave() -> void:
-	if not war_active:
-		save_game(AUTOSAVE_PATH, false)
+	if war_active:
+		return
+	# لا نكتب فوق حفظ تلقائي قديم قبل أن يتفاعل اللاعب (حتى لا يضيع تقدّمه السابق)
+	if not has_played and FileAccess.file_exists(AUTOSAVE_PATH):
+		return
+	save_game(AUTOSAVE_PATH, false)
 
 func _on_growth_tick() -> void:
 	for g in gods:
@@ -521,6 +556,7 @@ func _on_war_target_selected(id: int) -> void:
 
 func start_war(defender: Deity) -> void:
 	war_active = true
+	has_played = true
 	battle_panel.visible = true
 	battle_log.clear()
 	duel_box.visible = false
@@ -567,7 +603,7 @@ func run_god_duel(defender: Deity) -> bool:
 		marker_dir = 1.0
 		pending_strike = true
 		await strike_done
-		var hit := abs(marker_t - 0.5) <= 0.14
+		var hit: bool = absf(marker_t - 0.5) <= 0.14
 		var chance: float = clamp(player.strength / (player.strength + defender.strength) + 0.2 + wb_player_bonus, 0.1, 0.95)
 		if hit and randf() < chance:
 			ps += 1
@@ -661,11 +697,22 @@ func build_ui() -> void:
 	hud.add_child(hud_strength)
 	hud_worlds = Label.new()
 	hud.add_child(hud_worlds)
+	var zoom_row := HBoxContainer.new()
+	zoom_row.add_theme_constant_override("separation", 8)
+	hud.add_child(zoom_row)
+	var zin := Button.new()
+	zin.text = "➕ تقريب"
+	zin.pressed.connect(_zoom_by.bind(1.25))
+	zoom_row.add_child(zin)
+	var zout := Button.new()
+	zout.text = "➖ إبعاد"
+	zout.pressed.connect(_zoom_by.bind(0.8))
+	zoom_row.add_child(zout)
 
 	# لوحة الخلق على اليمين
 	var panel := PanelContainer.new()
 	panel.set_anchors_preset(Control.PRESET_CENTER_RIGHT)
-	panel.offset_left = -290
+	panel.offset_left = -320
 	panel.offset_top = -350
 	panel.offset_bottom = 350
 	panel.offset_right = -10
@@ -674,9 +721,13 @@ func build_ui() -> void:
 	pstyle.corner_radius = 12
 	panel.add_theme_stylebox_override("panel", pstyle)
 	layer.add_child(panel)
+	var side_scroll := ScrollContainer.new()
+	side_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	panel.add_child(side_scroll)
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 6)
-	panel.add_child(box)
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	side_scroll.add_child(box)
 	var ptitle := Label.new()
 	ptitle.text = "✨ لوحة الخلق المطلق"
 	ptitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
