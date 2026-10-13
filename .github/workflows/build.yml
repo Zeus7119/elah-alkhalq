@@ -2,7 +2,7 @@ name: بناء لعبة إله الخلق (APK)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -14,22 +14,63 @@ jobs:
       - name: تحميل الكود
         uses: actions/checkout@v4
 
-      - name: إعداد مسار Android SDK
+      - name: تجهيز Godot للتصدير إلى أندرويد
+        shell: bash
         run: |
-          mkdir -p ~/.config/godot
-          cat > ~/.config/godot/editor_settings-4.3.tres <<'EOF'
-[gd_resource type="EditorSettings" format=3]
-[resource]
-export/android/android_sdk_path = "/root/android-sdk"
-EOF
+          set -e
+          echo "HOME=$HOME"
+          mkdir -p "$HOME/.local/share/godot/export_templates" "$HOME/.config/godot"
+
+          # مهام الحاويات تستخدم HOME=/github/home بينما ملفات الصورة تحت /root
+          if [ ! -d "$HOME/.local/share/godot/export_templates/4.3.stable" ]; then
+            SRC=$(find /root /usr /opt -maxdepth 7 -type d -name '4.3.stable' -path '*export_templates*' 2>/dev/null | head -n 1)
+            if [ -n "$SRC" ]; then
+              cp -r "$SRC" "$HOME/.local/share/godot/export_templates/4.3.stable"
+            else
+              echo "قوالب التصدير غير موجودة"; exit 1
+            fi
+          fi
+
+          # البحث عن Android SDK
+          SDK=""
+          for d in /root/android-sdk /usr/lib/android-sdk /opt/android-sdk "$ANDROID_HOME" "$ANDROID_SDK_ROOT"; do
+            if [ -n "$d" ] && [ -d "$d/build-tools" ]; then SDK="$d"; break; fi
+          done
+          if [ -z "$SDK" ]; then
+            BT=$(find / -maxdepth 5 -type d -name build-tools -not -path '/proc/*' 2>/dev/null | head -n 1)
+            if [ -n "$BT" ]; then SDK=$(dirname "$BT"); fi
+          fi
+          if [ -z "$SDK" ]; then echo "Android SDK غير موجود"; exit 1; fi
+          echo "Android SDK: $SDK"
+
+          # Java
+          JAVA_BIN=$(readlink -f "$(which java)")
+          JAVA_DIR=$(dirname "$(dirname "$JAVA_BIN")")
+          echo "Java: $JAVA_DIR"
+
+          # مفتاح التوقيع (debug)
+          KS="$HOME/debug.keystore"
+          if [ ! -f "$KS" ]; then
+            keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android \
+              -keystore "$KS" -storepass android \
+              -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          fi
+
+          printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\nexport/android/android_sdk_path = "%s"\nexport/android/java_sdk_path = "%s"\nexport/android/debug_keystore = "%s"\nexport/android/debug_keystore_user = "androiddebugkey"\nexport/android/debug_keystore_pass = "android"\n' "$SDK" "$JAVA_DIR" "$KS" > "$HOME/.config/godot/editor_settings-4.tres"
+          cp "$HOME/.config/godot/editor_settings-4.tres" "$HOME/.config/godot/editor_settings-4.3.tres"
 
       - name: استيراد المشروع
-        run: timeout 180 godot --headless --editor --quit --path . || true
+        run: |
+          timeout 300 godot --headless --path . --import || true
+          timeout 300 godot --headless --path . --import || true
 
       - name: بناء ملف APK
+        shell: bash
         run: |
           mkdir -p build
-          godot --headless --path . --export-debug "Android" build/elah-alkhalq.apk
+          godot --headless --path . --export-debug "Android" "$PWD/build/elah-alkhalq.apk" 2>&1 | tee export.log
+          test -s build/elah-alkhalq.apk || { echo "لم يُنتَج ملف APK — راجع السجل أعلاه"; exit 1; }
+          ls -lh build/
 
       - name: رفع ملف APK
         uses: actions/upload-artifact@v4
@@ -37,3 +78,11 @@ EOF
           name: Elah-AlKhalq-APK
           path: build/*.apk
           retention-days: 30
+
+      - name: رفع سجل الأخطاء عند الفشل
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: export-log
+          path: export.log
+          if-no-files-found: ignore
