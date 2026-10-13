@@ -35,7 +35,7 @@ func make_tone(freqs: Array, dur: float, vol: float, decay: float, sweep: float)
 			var ff: float = f * (1.0 + sweep * t / dur)
 			v += sin(TAU * ff * t)
 		v = v / freqs.size() * env * vol
-		data[i] = int(clamp(127.0 + v * 120.0, 0.0, 255.0))
+		data[i] = int(clamp(v * 120.0, -127.0, 127.0)) & 0xFF  # 8-bit موقّعة في Godot
 	var wav := AudioStreamWAV.new()
 	wav.format = AudioStreamWAV.FORMAT_8_BITS
 	wav.mix_rate = rate
